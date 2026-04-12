@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""
+migrate_csv_to_mongo.py
+
+Usage:
+  - Créer un fichier .env contenant MONGO_URI et MONGO_DB et (optionnel) CSV_PATH
+  - python migrate_csv_to_mongo.py --csv data.csv --collection my_collection
+"""
+
+import os
+import argparse
+import logging
+from dotenv import load_dotenv
+import pandas as pd
+from pymongo import MongoClient, errors
+from pymongo.errors import BulkWriteError
+from tqdm import tqdm
+import json
+from jsonschema import validate, ValidationError
+
+# ------------------------
+# Configuration du logging
+# ------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# ------------------------
+# Charger .env
+# ------------------------
+#load_dotenv()  # lit .env si présent
+DEFAULT_MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+DEFAULT_DB = os.getenv("DBMedical", "test_db")
+
+# ------------------------
+# Fonctions utilitaires
+# ------------------------
+def detect_and_convert_types(df: pd.DataFrame, schema: dict = None):
+    """
+    Tentative de casting des colonnes selon un schema optionnel.
+    Schema attendu (ex):
+      {"colname": "int", "price": "float", "date": "datetime"}
+    Supported types: int, float, bool, str, datetime
+    """
+    from pandas.api.types import is_numeric_dtype, is_datetime64_any_dtype
+
+    casts = {'int': 'Int64', 'float': 'float', 'bool': 'boolean', 'str': 'string', 'datetime': 'datetime64[ns]'}
+    if schema:
+        for col, t in schema.items():
+            if col not in df.columns:
+                logger.warning("Colonne attendue '%s' absente du CSV.", col)
+                continue
+            try:
+                target = casts.get(t)
+                if not target:
+                    logger.warning("Type cible inconnu '%s' pour %s", t, col)
+                    continue
+                if t == "datetime":
+                    df[col] = pd.to_datetime(df[col], errors='coerce')
+                else:
+                    df[col] = df[col].astype(target, errors='ignore')
+            except Exception as e:
+                logger.warning("Impossible de caster %s en %s : %s", col, t, e)
+    return df
+
+def basic_integrity_checks(df: pd.DataFrame):
+    """
+    Retourne un dict contenant résultats des tests : colonnes, types, doublons, valeurs manquantes
+    """
+    report = {}
+    report['n_rows'] = len(df)
+    report['n_columns'] = len(df.columns)
+    report['columns'] = list(df.columns)
+    report['dtypes'] = df.dtypes.apply(lambda x: str(x)).to_dict()
+    report['n_duplicates'] = int(df.duplicated().sum())
+    report['missing_per_column'] = df.isna().sum().to_dict()
+    # types summary
+    report['sample_types'] = {col: str(type(df[col].dropna().iloc[0]).__name__) if df[col].dropna().shape[0]>0 else 'empty' for col in df.columns}
+    return report
+
+def dataframe_to_mongo_docs(df: pd.DataFrame):
+    """
+    Convertit un DataFrame pandas en documents JSON (types natifs)
+    - Remplace numpy types par python natifs si besoin
+    """
+    # pandas.DataFrame.to_dict(orient='records') gère la plupart
+    records = df.where(pd.notnull(df), None).to_dict(orient='records')
+    return records
+
+# ------------------------
+# Migration principale
+# ------------------------
+def migrate(csv_path: str, mongo_uri: str, db_name: str, collection_name: str,
+            schema: dict = None, batch_size: int = 1000, create_indexes: list = None, drop_before: bool = False):
+    logger.info("Lecture du CSV: %s", csv_path)
+    df = pd.read_csv(csv_path)
+    logger.info("CSV lu : %d lignes, %d colonnes", df.shape[0], df.shape[1])
+
+    # Tests avant migration
+    logger.info("Exécution des tests d'intégrité avant migration...")
+    pre_report = basic_integrity_checks(df)
+    logger.info("Avant migration - lignes: %d, doublons: %d", pre_report['n_rows'], pre_report['n_duplicates'])
+
+    # Application du schema (typage) si fourni
+    if schema:
+        logger.info("Application du schéma pour conversion de types...")
+        df = detect_and_convert_types(df, schema)
+
+    # Optionnel : déduplication basique (on peut paramétrer les colonnes)
+    if pre_report['n_duplicates'] > 0:
+        logger.info("Suppression de %d doublons (par lignes identiques)...", pre_report['n_duplicates'])
+        df = df.drop_duplicates()
+
+    # Rapport après nettoyage
+    post_report = basic_integrity_checks(df)
+    logger.info("Après nettoyage - lignes: %d, doublons: %d", post_report['n_rows'], post_report['n_duplicates'])
+
+    # Connexion MongoDB
+    logger.info("Connexion à MongoDB (%s) ...", mongo_uri)
+    client = MongoClient(mongo_uri)
+    db = client[db_name]
+    coll = db[collection_name]
+
+    if drop_before:
+        logger.warning("drop_before True => suppression de la collection %s.%s", db_name, collection_name)
+        coll.drop()
+
+    # Création d'index pertinents
+    if create_indexes:
+        for idx in create_indexes:
+            # idx peut être soit un champ, soit une liste de tuples [(field, direction)]
+            logger.info("Création index: %s", idx)
+            try:
+                if isinstance(idx, str):
+                    coll.create_index([(idx, 1)])
+                elif isinstance(idx, (list, tuple)):
+                    coll.create_index(idx)
+                else:
+                    logger.warning("Format index non reconnu: %s", idx)
+            except errors.PyMongoError as e:
+                logger.error("Erreur création index %s : %s", idx, e)
+
+    # Préparer les documents
+    docs = dataframe_to_mongo_docs(df)
+    logger.info("Envoi des documents vers MongoDB (%d docs)...", len(docs))
+
+    # Insert par batch
+    inserted = 0
+    try:
+        for i in tqdm(range(0, len(docs), batch_size), desc="Insertion batches"):
+            batch = docs[i:i+batch_size]
+            if not batch:
+                continue
+            result = coll.insert_many(batch, ordered=False)
+            inserted += len(result.inserted_ids)
+    except BulkWriteError as bwe:
+        logger.error("Bulk write error : %s", bwe.details)
+        # count successful
+        inserted = coll.count_documents({})
+    except Exception as e:
+        logger.exception("Erreur lors de l'insertion: %s", e)
+        inserted = coll.count_documents({})
+
+    logger.info("Insertion terminée. Documents insérés (approx) : %d", inserted)
+
+    # Tests post-migration simple
+    post_count = coll.count_documents({})
+    logger.info("Documents dans MongoDB (%s.%s) : %d", db_name, collection_name, post_count)
+
+    # Export de rapports vers fichiers JSON locaux (traçabilité)
+    base_name = os.path.splitext(os.path.basename(csv_path))[0]
+    with open(f"{base_name}_pre_report.json", "w", encoding="utf-8") as f:
+        json.dump(pre_report, f, ensure_ascii=False, indent=2)
+    with open(f"{base_name}_post_report.json", "w", encoding="utf-8") as f:
+        json.dump(post_report, f, ensure_ascii=False, indent=2)
+
+    logger.info("Rapports pré/post migration sauvegardés: %s_pre_report.json, %s_post_report.json", base_name, base_name)
+
+    return {
+        "inserted_estimate": inserted,
+        "mongo_count": post_count,
+        "pre_report": pre_report,
+        "post_report": post_report
+    }
+
+# ------------------------
+# CLI
+# ------------------------
+def parse_args():
+    p = argparse.ArgumentParser(description="Migrate CSV to MongoDB with integrity checks")
+    p.add_argument("--csv", required=True, help="Chemin du fichier CSV")
+    p.add_argument("--collection", required=True, help="Nom de la collection MongoDB cible")
+    p.add_argument("--db", default=DEFAULT_DB, help="Nom de la DB MongoDB")
+    p.add_argument("--uri", default=DEFAULT_MONGO_URI, help="URI MongoDB (ex: mongodb://localhost:27017)")
+    p.add_argument("--batch", type=int, default=1000, help="Taille des batches pour insert_many")
+    p.add_argument("--drop", action="store_true", help="Supprimer la collection cible avant d'insérer")
+    p.add_argument("--indexes", nargs="*", help="Liste simple de champs pour indexer (séparés par espace)")
+    p.add_argument("--schema", help="Chemin JSON vers un schema simple (col: type) pour forcer typage")
+    return p.parse_args()
+
+def load_schema(path):
+    import json
+    if not path:
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+if __name__ == "__main__":
+    args = parse_args()
+    schema = load_schema(args.schema)
+    indexes = args.indexes if args.indexes else None
+
+    result = migrate(
+        csv_path=args.csv,
+        mongo_uri=args.uri,
+        db_name=args.db,
+        collection_name=args.collection,
+        schema=schema,
+        batch_size=args.batch,
+        create_indexes=indexes,
+        drop_before=args.drop
+    )
+    logger.info("Migration résultat: %s", result)
