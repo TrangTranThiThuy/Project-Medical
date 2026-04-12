@@ -1,28 +1,24 @@
-# 1. Project Overview
+# Migration CSV -> MongoDB
 
-This project transfers data from a CSV file into a MongoDB database.
-It demonstrates the use of NoSQL concepts and Python scripting for automated data migration.
+## Objectif
+Fournir un script réutilisable pour migrer les données d'un fichier CSV vers une base de données MongoDB en :
+- vérifiant l'intégrité des données avant et après migration,
+- appliquant un typage simple,
+- supprimant les doublons,
+- automatisant des tests, et
+- créant des index pertinents.
 
-# 2. Prerequisites
+## Utilisation avec uv (recommandé)
+Ce projet utilise uv pour gérer les dépendances et l'environnement virtuel.
 
-- Python 3.x installed
-- MongoDB installed locally
-- Virtual environment (recommended)
-- Required Python modules (see requirements.txt)
+## Prérequis
+- Installer MongoDB localement (ex : via les paquets officiels ou docker).
+- Python 3.10+ recommandé.
+- Créer un environnement virtuel.
 
-# 3. MongoDB Concepts
-
-- Document: A JSON-like record representing a single entry in the database.
-- Collection: A group of documents.
-- Database: A container for collections.
-
-# 4. Script Logic
-
-The migration script performs the following steps:
-
-1. Reads data from <CSV_FILE_NAME>.csv.
-2. Validates the data:
- - Checks for missing values and duplicates
- - Transforms the data if necessary.
-3. Ensures correct data types
-4. Inserts the cleaned data into the MongoDB collection <COLLECTION_NAME> in the database <DB_NAME>.
+## Installation (exemple)
+```bash
+# dans le dossier project/
+python -m venv .venv
+source .venv/bin/activate   # on Windows: .venv\Scripts\activate
+pip install -r requirements.txt
