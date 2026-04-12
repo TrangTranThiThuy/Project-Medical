@@ -1,0 +1,30 @@
+
+services:
+  mongo:
+    image: mongo:latest
+    restart: always
+    container_name: mongo_db
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  migration:
+    build: .
+    container_name: migration_script
+    depends_on:
+      - mongo
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB=DBMedical
+    volumes:
+      - ./data:/app/data
+    command: >
+      uv run python migrate_csv_to_mongo.py
+      --csv data/healthcare_dataset.csv
+      --collection Healthcare
+      --db DBMedical
+      --drop
+
+volumes:
+  mongo_data:
