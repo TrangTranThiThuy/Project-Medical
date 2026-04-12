@@ -15,8 +15,8 @@ services:
     depends_on:
       - mongo
     environment:
-      - MONGO_URI=mongodb://mongo:27017
-      - MONGO_DB=DBMedical
+        - MONGO_URI=${MONGO_URI}
+        - MONGO_DB=${MONGO_DB}
     volumes:
       - ./data:/app/data
     command: >
