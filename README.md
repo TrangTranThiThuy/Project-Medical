@@ -156,8 +156,42 @@ Then run:
 use DBMedical
 db.Healthcare.find().limit(5)
 ```
+---
+## Authentication System
 
-Alternatively, you can connect using a GUI tool such as MongoDB Compass.
+Configuration
+
+Authentication is configured using environment variables defined in a .env file (not committed to the repository):
+
+MONGO_INITDB_ROOT_USERNAME=admin
+MONGO_INITDB_ROOT_PASSWORD=admin123
+MONGO_APP_USER=app_user
+MONGO_APP_PASSWORD=securepassword
+MONGO_DB=DBMedical
+MONGO_URI=mongodb://app_user:securepassword@mongo:27017/DBMedical
+User Roles
+
+The system defines the following roles:
+
+* Admin User
+ * Full access to the MongoDB instance
+ * Used only for administrative tasks
+* Application User
+ * Read and write access to the DBMedical database
+ * Used by the migration script
+
+Initialization
+
+Users are created automatically at container startup using the init-mongo.js script.
+
+Secure Connection
+
+The application connects using authenticated credentials:
+
+mongodb://app_user:securepassword@mongo:27017/DBMedical
+
+This ensures only authorized users can access the data. 
+
 
 ---
 
