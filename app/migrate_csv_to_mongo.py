@@ -17,6 +17,7 @@ from pymongo.errors import BulkWriteError
 from tqdm import tqdm
 import json
 from jsonschema import validate, ValidationError
+import glob
 
 # ------------------------
 # Logging configuration
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 # ------------------------
 #load_dotenv()  # reads variables from a .env file and sets them in os.environ # lit .env if exists
 DEFAULT_MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-DEFAULT_DB = os.getenv("DBMedical", "test")
+DEFAULT_DB = os.getenv("MONGO_DB", "test")
 
 # ------------------------
 # Functions
@@ -94,8 +95,14 @@ def dataframe_to_mongo_docs(df: pd.DataFrame):
 # ------------------------
 # Migration
 # ------------------------
-def migrate(csv_path: str, mongo_uri: str, db_name: str, collection_name: str,
-            schema: dict = None, batch_size: int = 1000, create_indexes: list = None, drop_before: bool = False):
+def migrate(csv_path: str, 
+            mongo_uri: str, 
+            db_name: str, 
+            collection_name: str,
+            schema: dict = None, 
+            batch_size: int = 1000, 
+            create_indexes: list = None, 
+            drop_before: bool = False):
     logger.info("Reading the CSV: %s", csv_path)
     df = pd.read_csv(csv_path)
     logger.info("CSV read: %d rows, %d columns", df.shape[0], df.shape[1])
@@ -126,14 +133,14 @@ def migrate(csv_path: str, mongo_uri: str, db_name: str, collection_name: str,
     coll = db[collection_name]
 
     if drop_before:
-        logger.warning("drop_before True => suppression de la collection %s.%s", db_name, collection_name)
+        logger.warning("drop_before True => removing the collection %s.%s", db_name, collection_name)
         coll.drop()
 
-    # Création d'index pertinents
+    # Creating relevant indexes
     if create_indexes:
         for idx in create_indexes:
-            # idx peut être soit un champ, soit une liste de tuples [(field, direction)]
-            logger.info("Création index: %s", idx)
+            # idx can be either a field or a list of tuples [(field, direction)]
+            logger.info("Creating index: %s", idx)
             try:
                 if isinstance(idx, str):
                     coll.create_index([(idx, 1)])
@@ -144,11 +151,14 @@ def migrate(csv_path: str, mongo_uri: str, db_name: str, collection_name: str,
             except errors.PyMongoError as e:
                 logger.error("Erreur création index %s : %s", idx, e)
 
-    # Préparer les documents
+    # Prepare the documents
     docs = dataframe_to_mongo_docs(df)
-    logger.info("Envoi des documents vers MongoDB (%d docs)...", len(docs))
+    logger.info("Sending documents to MongoDB (%d docs)...", len(docs))
 
-    # Insert par batch
+    # Batch insert
+    # Inserts large CSV data in smaller batches to avoid memory or write-size issues.
+    # Provides progress feedback.
+    # Handles partial failures gracefully instead of stopping on the first bad document.
     inserted = 0
     try:
         for i in tqdm(range(0, len(docs), batch_size), desc="Insertion batches"):
@@ -162,23 +172,30 @@ def migrate(csv_path: str, mongo_uri: str, db_name: str, collection_name: str,
         # count successful
         inserted = coll.count_documents({})
     except Exception as e:
-        logger.exception("Erreur lors de l'insertion: %s", e)
+        logger.exception("Error during insertion: %s", e)
         inserted = coll.count_documents({})
 
-    logger.info("Insertion terminée. Documents insérés (approx) : %d", inserted)
+    logger.info("Insertion completed. Documents inserted (approx) : %d", inserted)
 
-    # Tests post-migration simple
+    # Simple post-migration tests
     post_count = coll.count_documents({})
-    logger.info("Documents dans MongoDB (%s.%s) : %d", db_name, collection_name, post_count)
+    logger.info("Documents in MongoDB (%s.%s) : %d", db_name, collection_name, post_count)
 
-    # Export de rapports vers fichiers JSON locaux (traçabilité)
+    # Exporting reports to local JSON files (traceability)
+    os.makedirs("json", exist_ok=True)
     base_name = os.path.splitext(os.path.basename(csv_path))[0]
-    with open(f"{base_name}_pre_report.json", "w", encoding="utf-8") as f:
+    # Delete old report files for this CSV
+    old_pre = glob.glob(f"json/{base_name}_pre_report.json")
+    old_post = glob.glob(f"json/{base_name}_post_report.json")
+    for f in old_pre + old_post:
+        os.remove(f)
+        logger.info("Deleted old report: %s", f)
+    with open(f"json/{base_name}_pre_report.json", "w", encoding="utf-8") as f:
         json.dump(pre_report, f, ensure_ascii=False, indent=2)
-    with open(f"{base_name}_post_report.json", "w", encoding="utf-8") as f:
+    with open(f"json/{base_name}_post_report.json", "w", encoding="utf-8") as f:
         json.dump(post_report, f, ensure_ascii=False, indent=2)
 
-    logger.info("Rapports pré/post migration sauvegardés: %s_pre_report.json, %s_post_report.json", base_name, base_name)
+    logger.info("Rapports pré/post migration sauvegardés: json/%s_pre_report.json, json/%s_post_report.json", base_name, base_name)
 
     return {
         "inserted_estimate": inserted,
@@ -192,14 +209,14 @@ def migrate(csv_path: str, mongo_uri: str, db_name: str, collection_name: str,
 # ------------------------
 def parse_args():
     p = argparse.ArgumentParser(description="Migrate CSV to MongoDB with integrity checks")
-    p.add_argument("--csv", required=True, help="Chemin du fichier CSV")
-    p.add_argument("--collection", required=True, help="Nom de la collection MongoDB cible")
-    p.add_argument("--db", default=DEFAULT_DB, help="Nom de la DB MongoDB")
-    p.add_argument("--uri", default=DEFAULT_MONGO_URI, help="URI MongoDB (ex: mongodb://localhost:27017)")
-    p.add_argument("--batch", type=int, default=1000, help="Taille des batches pour insert_many")
-    p.add_argument("--drop", action="store_true", help="Supprimer la collection cible avant d'insérer")
-    p.add_argument("--indexes", nargs="*", help="Liste simple de champs pour indexer (séparés par espace)")
-    p.add_argument("--schema", help="Chemin JSON vers un schema simple (col: type) pour forcer typage")
+    p.add_argument("--csv", default="data/healthcare_dataset.csv", help="CSV file path")
+    p.add_argument("--collection", default="Healthcare", help="Name of the target MongoDB collection")
+    p.add_argument("--db", default=DEFAULT_DB, help="Name of the target MongoDB database")
+    p.add_argument("--uri", default=DEFAULT_MONGO_URI, help="MongoDB URI (e.g., mongodb://localhost:27017)")
+    p.add_argument("--batch", type=int, default=1000, help="Size of batches for insert_many")
+    p.add_argument("--drop", action="store_true", help="Drop the target collection before inserting")
+    p.add_argument("--indexes", nargs="*", help="List of fields to index (space-separated)")
+    p.add_argument("--schema", help="JSON file path for schema definition (col: type) to enforce typing")
     return p.parse_args()
 
 def load_schema(path):
@@ -224,4 +241,4 @@ if __name__ == "__main__":
         create_indexes=indexes,
         drop_before=args.drop
     )
-    logger.info("Migration résultat: %s", result)
+    logger.info("Migration result: %s", result)

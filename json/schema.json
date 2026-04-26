@@ -12,5 +12,5 @@
         "Admission Type": "str",
         "Discharge Date": "datetime",
         "Medication": "str",
-        "Test Results": "str",
+        "Test Results": "str"
 }
