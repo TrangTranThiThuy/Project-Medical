@@ -1,8 +1,10 @@
+// Switches to the database
 db = db.getSiblingDB('DBMedical');
-
+// Creates app_user
 db.createUser({
-    user: "app_user",
-    pwd: "app_password123",
+    user: process.env.MONGO_APP_USER,
+    pwd: process.env.MONGO_APP_PASSWORD,
+    // Grants readWrite and dbAdmin roles on DBMedical
     roles: [
         { role: "readWrite", db: "DBMedical" },
         { role: "dbAdmin", db: "DBMedical" }
