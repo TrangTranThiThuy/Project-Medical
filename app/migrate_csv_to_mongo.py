@@ -3,7 +3,7 @@
 migrate_csv_to_mongo.py
 
 Usage:
-  - Créer un fichier .env contenant MONGO_URI et MONGO_DB et (optionnel) CSV_PATH
+  - Create a .env file containing MONGO_URI and MONGO_DB and (optionally) CSV_PATH
   - python migrate_csv_to_mongo.py --csv healthcare_dataset.csv --collection Healthcare
 """
 
@@ -19,7 +19,7 @@ import json
 from jsonschema import validate, ValidationError
 
 # ------------------------
-# Configuration du logging
+# Logging configuration
 # ------------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -38,22 +38,7 @@ DEFAULT_DB = os.getenv("DBMedical", "test")
 # Functions
 # ------------------------
 def detect_and_convert_types(df: pd.DataFrame, 
-                            schema={"Name": "str",
-                                        "Age": "int",
-                                        "Gender": "str",
-                                        "Blood Type": "str",
-                                        "Medical Condition": "str",
-                                        "Date of Admission": "datetime",
-                                        "Doctor": "str",
-                                        "Hospital": "str",
-                                        "Insurance Provider": "str",
-                                        "Billing Amount": "float",
-                                        "Room Number": "int",
-                                        "Admission Type": "str",
-                                        "Discharge Date": "datetime",
-                                        "Medication": "str",
-                                        "Test Results": "str",
-                            }) -> pd.DataFrame:
+                            schema: dict = None) -> pd.DataFrame:
     """
     Supported types: int, float, bool, str, datetime
     """
@@ -120,22 +105,22 @@ def migrate(csv_path: str, mongo_uri: str, db_name: str, collection_name: str,
     pre_report = basic_integrity_checks(df)
     logger.info("Before migration - rows: %d, duplicates: %d", pre_report['n_rows'], pre_report['n_duplicates'])
 
-    # Application du schema (typage) si fourni
+    # Schema application
     if schema:
-        logger.info("Application du schéma pour conversion de types...")
+        logger.info("Application of the scheme for type conversion...")
         df = detect_and_convert_types(df, schema)
 
-    # Optionnel : déduplication basique (on peut paramétrer les colonnes)
+    # Basic deduplication (columns can be configured)
     if pre_report['n_duplicates'] > 0:
-        logger.info("Suppression de %d doublons (par lignes identiques)...", pre_report['n_duplicates'])
+        logger.info("Removing %d duplicates (by identical lines)...", pre_report['n_duplicates'])
         df = df.drop_duplicates()
 
-    # Rapport après nettoyage
+    # Report after cleaning
     post_report = basic_integrity_checks(df)
-    logger.info("Après nettoyage - lignes: %d, doublons: %d", post_report['n_rows'], post_report['n_duplicates'])
+    logger.info("After cleaning - rows: %d, duplicates: %d", post_report['n_rows'], post_report['n_duplicates'])
 
-    # Connexion MongoDB
-    logger.info("Connexion à MongoDB (%s) ...", mongo_uri)
+    # MongoDB Connection
+    logger.info("Connecting to MongoDB (%s) ...", mongo_uri)
     client = MongoClient(mongo_uri)
     db = client[db_name]
     coll = db[collection_name]
