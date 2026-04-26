@@ -4,7 +4,7 @@ migrate_csv_to_mongo.py
 
 Usage:
   - Créer un fichier .env contenant MONGO_URI et MONGO_DB et (optionnel) CSV_PATH
-  - python migrate_csv_to_mongo.py --csv data.csv --collection my_collection
+  - python migrate_csv_to_mongo.py --csv healthcare_dataset.csv --collection Healthcare
 """
 
 import os
@@ -28,46 +28,59 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ------------------------
-# Charger .env
+# Load .env
 # ------------------------
-#load_dotenv()  # lit .env si présent
+#load_dotenv()  # reads variables from a .env file and sets them in os.environ # lit .env if exists
 DEFAULT_MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-DEFAULT_DB = os.getenv("DBMedical", "test_db")
+DEFAULT_DB = os.getenv("DBMedical", "test")
 
 # ------------------------
-# Fonctions utilitaires
+# Functions
 # ------------------------
-def detect_and_convert_types(df: pd.DataFrame, schema: dict = None):
+def detect_and_convert_types(df: pd.DataFrame, 
+                            schema={"Name": "str",
+                                        "Age": "int",
+                                        "Gender": "str",
+                                        "Blood Type": "str",
+                                        "Medical Condition": "str",
+                                        "Date of Admission": "datetime",
+                                        "Doctor": "str",
+                                        "Hospital": "str",
+                                        "Insurance Provider": "str",
+                                        "Billing Amount": "float",
+                                        "Room Number": "int",
+                                        "Admission Type": "str",
+                                        "Discharge Date": "datetime",
+                                        "Medication": "str",
+                                        "Test Results": "str",
+                            }) -> pd.DataFrame:
     """
-    Tentative de casting des colonnes selon un schema optionnel.
-    Schema attendu (ex):
-      {"colname": "int", "price": "float", "date": "datetime"}
     Supported types: int, float, bool, str, datetime
     """
     from pandas.api.types import is_numeric_dtype, is_datetime64_any_dtype
 
-    casts = {'int': 'Int64', 'float': 'float', 'bool': 'boolean', 'str': 'string', 'datetime': 'datetime64[ns]'}
+    casts = {'int': 'Int64', 'float': 'float', 'bool': 'boolean', 'str': 'string', 'datetime': 'datetime64[ns]','double': 'float', 'objectId':'string'}
     if schema:
         for col, t in schema.items():
             if col not in df.columns:
-                logger.warning("Colonne attendue '%s' absente du CSV.", col)
+                logger.warning("Expected column '%s' missing from CSV.", col)
                 continue
             try:
                 target = casts.get(t)
                 if not target:
-                    logger.warning("Type cible inconnu '%s' pour %s", t, col)
+                    logger.warning("Target type unknown '%s' for %s", t, col)
                     continue
                 if t == "datetime":
                     df[col] = pd.to_datetime(df[col], errors='coerce')
                 else:
                     df[col] = df[col].astype(target, errors='ignore')
             except Exception as e:
-                logger.warning("Impossible de caster %s en %s : %s", col, t, e)
+                logger.warning("Impossible to cast %s in %s : %s", col, t, e)
     return df
 
 def basic_integrity_checks(df: pd.DataFrame):
     """
-    Retourne un dict contenant résultats des tests : colonnes, types, doublons, valeurs manquantes
+    Returns a dictionary containing test results: columns, types, duplicates, missing values
     """
     report = {}
     report['n_rows'] = len(df)
@@ -77,31 +90,35 @@ def basic_integrity_checks(df: pd.DataFrame):
     report['n_duplicates'] = int(df.duplicated().sum())
     report['missing_per_column'] = df.isna().sum().to_dict()
     # types summary
-    report['sample_types'] = {col: str(type(df[col].dropna().iloc[0]).__name__) if df[col].dropna().shape[0]>0 else 'empty' for col in df.columns}
+    report['sample_types'] = {
+        col: str(type(df[col].dropna().iloc[0]).__name__) 
+        if df[col].dropna().shape[0]>0 
+        else 'empty' 
+        for col in df.columns
+    }
     return report
 
 def dataframe_to_mongo_docs(df: pd.DataFrame):
     """
-    Convertit un DataFrame pandas en documents JSON (types natifs)
-    - Remplace numpy types par python natifs si besoin
+    Convert a pandas DataFrame to JSON documents (native types) 
+    - Replace numpy types with native python types if needed
     """
-    # pandas.DataFrame.to_dict(orient='records') gère la plupart
     records = df.where(pd.notnull(df), None).to_dict(orient='records')
     return records
 
 # ------------------------
-# Migration principale
+# Migration
 # ------------------------
 def migrate(csv_path: str, mongo_uri: str, db_name: str, collection_name: str,
             schema: dict = None, batch_size: int = 1000, create_indexes: list = None, drop_before: bool = False):
-    logger.info("Lecture du CSV: %s", csv_path)
+    logger.info("Reading the CSV: %s", csv_path)
     df = pd.read_csv(csv_path)
-    logger.info("CSV lu : %d lignes, %d colonnes", df.shape[0], df.shape[1])
+    logger.info("CSV read: %d rows, %d columns", df.shape[0], df.shape[1])
 
-    # Tests avant migration
-    logger.info("Exécution des tests d'intégrité avant migration...")
+    # Tests before migration
+    logger.info("Executing integrity tests before migration...")
     pre_report = basic_integrity_checks(df)
-    logger.info("Avant migration - lignes: %d, doublons: %d", pre_report['n_rows'], pre_report['n_duplicates'])
+    logger.info("Before migration - rows: %d, duplicates: %d", pre_report['n_rows'], pre_report['n_duplicates'])
 
     # Application du schema (typage) si fourni
     if schema:
