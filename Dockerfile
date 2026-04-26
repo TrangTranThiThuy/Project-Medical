@@ -7,13 +7,13 @@ WORKDIR /app
 # Copy only the necessary files for dependency installation
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies from lockfile
-RUN uv sync --frozen
-
 # Copy migration script
 COPY app/migrate_csv_to_mongo.py ./
 
-# Les données CSV sont mountées via volume dans docker-compose au runtime
+# Install dependencies from lockfile
+RUN uv sync --frozen
+
+# The CSV data is mounted via volume in docker-compose at runtime
 # A non-root user is created to improve security
 # Root containers can be dangerous if vulnerabilities exist
 RUN addgroup --system appgroup && adduser --system --no-create-home --disabled-login --ingroup appgroup appuser && \
